@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>サンライズ出雲 現在位置（国鉄特急色テーマ）</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <style>
+    /* === 国鉄特急色テーマ ===
+       ベース：アイボリー (#f6f2e7)
+       差し色：朱色 (#b7410e) / 金色 (#c7a600)
+       補助：生成り (#fffaf0) / 線 (#d4c8a0)
+    */
+    :root {
+      --bg: #f6f2e7;
+      --panel: #fffaf0;
+      --text: #3a2c00;
+      --muted: #6b5c2a;
+      --accent: #b7410e;
+      --gold: #c7a600;
+      --line: #d4c8a0;
+    }
+
+    *{box-sizing:border-box}
+    body{margin:0;background:var(--bg);color:var(--text);font:14px/1.6 system-ui, -apple-system, 'Hiragino Sans', 'Noto Sans JP', 'Yu Gothic UI', sans-serif}
+    header{position:sticky;top:0;z-index:1000;background:linear-gradient(180deg, var(--accent), #a43609);color:#fffef5;border-bottom:3px solid var(--gold)}
+    .wrap{max-width:1100px;margin:0 auto;padding:14px 16px}
+    h1{margin:0;font-size:20px;letter-spacing:.03em}
+    .sub{color:#fffbe0;font-size:12px;opacity:.9}
+    .grid{display:grid;grid-template-columns:1.2fr .8fr;gap:12px;margin:12px 0}
+    #map{height:64vh;border:2px solid var(--line);border-radius:14px}
+    .panel{background:var(--panel);border:2px solid var(--line);border-radius:14px;padding:14px;box-shadow:0 2px 6px rgba(75,46,5,.12)}
+    .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+    .row > *{margin:4px 0}
+    .badge{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);padding:6px 10px;border-radius:999px;color:var(--text);background:#fff}
+    .pill{background:#fff;border:1px solid var(--line);padding:6px 10px;border-radius:999px}
+    .btn{cursor:pointer;background:var(--accent);border:none;color:#fffef5;font-weight:700;padding:8px 14px;border-radius:10px}
+    .btn.secondary{background:var(--gold);color:#3a2c00;border:1px solid var(--line)}
+    .progress{height:8px;background:#efe5c8;border-radius:999px;overflow:hidden;border:1px solid var(--line)}
+    .progress>span{display:block;height:100%;background:linear-gradient(90deg,var(--accent),var(--gold))}
+    table{width:100%;border-collapse:collapse;background:#fff}
+    th,td{border-bottom:1px solid var(--line);padding:8px 6px;text-align:left}
+    th{color:var(--accent);font-weight:700}
+    tr:last-child td{border-bottom:none}
+    .time{font-variant-numeric:tabular-nums}
+    footer{color:var(--muted);text-align:center;padding:16px;border-top:3px solid var(--accent);background:#f9f5ea}
+    .mono{font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, 'Roboto Mono', monospace}
+    .ticker{margin-top:10px;border:2px solid var(--accent);border-radius:12px;background:var(--gold);position:relative;overflow:hidden}
+    .ticker .led{white-space:nowrap;display:inline-block;padding:10px 0;font-family:'Roboto Mono', ui-monospace, monospace;font-weight:700;letter-spacing:.06em;color:#3a2c00}
+    .ticker .track{position:relative;display:flex;gap:60px;will-change:transform;animation:scroll-left 20s linear infinite}
+    .ticker:hover .track{animation-play-state:paused}
+    @keyframes scroll-left{0%{transform:translateX(0)}100%{transform:translateX(-50%)}}
+    .train-icon{filter:drop-shadow(0 0 0 #fff)}
+  </style>
+</head>
+<body>
+  <header>
+    <div class="wrap">
+      <h1>サンライズ出雲：東京 → 出雲市（時刻表ベースの現在位置推定）</h1>
+      <div class="sub">※実GPSではなく、公開時刻表に基づく <span class="mono">推定位置</span> を表示。ダイヤ改正時はデータ更新が必要です。</div>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <div class="panel" style="margin-top:8px">
+      <div class="row">
+        <div class="badge">ローカル時刻：<span id="nowJST" class="time"></span></div>
+        <div class="badge">運転対象日：<input id="datePick" type="date"/></div>
+        <button id="btnNow" class="btn secondary">今日の運転を表示</button>
+        <button id="btnShare" class="btn secondary">この状態を共有</button>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <div class="badge">状態：<span id="status"></span></div>
+        <div class="badge">区間：<span id="segment"></span></div>
+        <div class="badge">次停車：<span id="nextStop"></span></div>
+        <div class="badge">到着予測：<span id="eta" class="time"></span></div>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <input id="geojsonUrl" class="pill" style="flex:1;min-width:280px" placeholder="線路GeoJSONのURL（例：/data/sunrise_izumo_route.geojson）"/>
+        <button id="btnLoadGeo" class="btn secondary">GeoJSON読込</button>
+        <button id="btnClearGeo" class="btn secondary">GeoJSON消去</button>
+      </div>
+      <div class="progress" style="margin-top:12px">
+        <span id="routeProgress" style="width:0%"></span>
+      </div>
+      <div class="ticker" aria-live="polite" aria-atomic="true">
+        <div class="led">
+          <div class="track" id="ledTicker">
+            <span>現在位置の取得中…</span>
+            <span>現在位置の取得中…</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="grid">
+      <div id="map"></div>
+      <div class="panel">
+        <h3 style="margin:4px 0 8px">停車駅と時刻</h3>
+        <table id="tbl"></table>
+        <div class="sub" style="margin-top:8px">※「+1」は翌日時刻。`timetable` を実ダイヤに合わせて編集できます。</div>
+      </div>
+    </div>
+
+    <div class="panel" style="margin-top:12px">
+      <details>
+        <summary>設定・カスタマイズ</summary>
+        <ul>
+          <li>地図：Leaflet + Carto Light タイル。</li>
+          <li>推定ロジック：時刻表の区間割合 → <b>GeoJSON距離ベース</b>（読込時）/ 浜松→姫路は内蔵コリドー / それ以外は駅座標の線形補間。</li>
+          <li>夜行日付跨ぎ対応（<span class="mono">21:50 → 09:58+1</span>）。</li>
+          <li>共有ボタン：運転日をURLハッシュに保存。</li>
+        </ul>
+      </details>
+    </div>
+  </main>
+
+  <footer>
+    <div class="wrap">© あなたのサイト名 / Map © OpenStreetMap contributors</div>
+  </footer>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script>
+  // ==== 1) 停車駅・座標・時刻（実ダイヤ）====
+  const timetable = [
+    {name:"東京",       time:"21:50",   lat:35.681236, lon:139.767125},
+    {name:"横浜",       time:"22:15",   lat:35.465833, lon:139.622500},
+    {name:"熱海",       time:"23:23",   lat:35.103000, lon:139.077000},
+    {name:"沼津",       time:"23:39",   lat:35.103217, lon:138.860593},
+    {name:"富士",       time:"23:53",   lat:35.150219, lon:138.676581},
+    {name:"静岡",       time:"00:20+1", lat:34.971000, lon:138.389000},
+    {name:"浜松",       time:"01:12+1", lat:34.703000, lon:137.734000},
+    {name:"姫路",       time:"05:26+1", lat:34.826000, lon:134.690000},
+    {name:"岡山（分割）", time:"06:27+1", lat:34.665000, lon:133.918000},
+    {name:"岡山（出雲方 発）", time:"06:34+1", lat:34.665000, lon:133.918000},
+    {name:"倉敷",       time:"06:46+1", lat:34.585, lon:133.772},
+    {name:"備中高梁",   time:"07:14+1", lat:34.787, lon:133.611},
+    {name:"新見",       time:"07:43+1", lat:34.976, lon:133.470},
+    {name:"米子",       time:"09:03+1", lat:35.423, lon:133.331},
+    {name:"安来",       time:"09:13+1", lat:35.431, lon:133.242},
+    {name:"松江",       time:"09:30+1", lat:35.468, lon:133.048},
+    {name:"宍道",       time:"09:45+1", lat:35.431, lon:132.886},
+    {name:"出雲市",     time:"09:58+1", lat:35.367, lon:132.754}
+  ];
+
+  // 浜松→姫路のみ補正するコリドー
+  const hmHjCorridor = [
+    [34.7030,137.7340],  [34.7703,137.9980], [34.7622,137.3830], [34.8260,137.2270],
+    [34.9540,137.1700],  [35.1709,136.8815], [35.2484,136.9367], [35.3009,136.7569],
+    [35.3161,136.2920],  [35.0116,135.7681], [34.8930,135.8050], [34.7339,135.5000],
+    [34.7330,135.4170],  [34.7370,135.3040], [34.6928,135.1955], [34.6494,134.9972],
+    [34.7691,134.8390],  [34.8260,134.6900]
+  ];
+
+  // ==== 2) 日付処理・ユーティリティ ====
+  const JST = 'Asia/Tokyo';
+  const fmtHM = (d)=> d.toLocaleTimeString('ja-JP',{hour:'2-digit',minute:'2-digit',hour12:false,timeZone:JST});
+  const fmtYMD = (d)=> d.toLocaleDateString('sv-SE',{year:'numeric',month:'2-digit',day:'2-digit',timeZone:JST});
+  function parseHMToDate(baseDate, hhmm){
+    const m = hhmm.match(/^(\d{2}):(\d{2})(\+1)?$/);
+    if(!m) throw new Error('Bad time '+hhmm);
+    const d = new Date(baseDate); d.setHours(+m[1], +m[2], 0, 0); if(m[3]) d.setDate(d.getDate()+1); return d;
+  }
+  function setTime(d,h,m,s,ms){ const x=new Date(d); x.setHours(h,m,s,ms); return x; }
+  function pickRunFor(now){
+    const candTodayStart = setTime(new Date(now), 21,50,0,0);
+    const candTodayArrive = parseHMToDate(candTodayStart, timetable.at(-1).time);
+    const candPrevStart = new Date(candTodayStart); candPrevStart.setDate(candTodayStart.getDate()-1);
+    const candPrevArrive = parseHMToDate(candPrevStart, timetable.at(-1).time);
+    if(now >= candTodayStart && now <= candTodayArrive) return {start:candTodayStart, arrive:candTodayArrive};
+    if(now < candTodayStart && now <= candPrevArrive) return {start:candPrevStart, arrive:candPrevArrive};
+    return null;
+  }
+
+  // ==== 3) 区間内補間（GeoJSON優先 → 浜松-姫路コリドー → 直線） ====
+  function interpolatePosition(now, startDate){
+    const pts = timetable.map(pt=>({ ...pt, t: parseHMToDate(startDate, pt.time) }));
+    if(now <= pts[0].t) return { pos:[pts[0].lat, pts[0].lon], idx:0, nextIdx:1, progress:0 };
+    if(now >= pts.at(-1).t) return { pos:[pts.at(-1).lat, pts.at(-1).lon], idx:pts.length-1, nextIdx:null, progress:1 };
+    for(let i=0;i<pts.length-1;i++){
+      const a=pts[i], b=pts[i+1];
+      if(now >= a.t && now <= b.t){
+        const r = (now - a.t) / (b.t - a.t);
+        const routeProgress = (i + r) / (pts.length-1);
+        if(geoRoute && cumDist && stationDist){
+          const da = stationDist[i], db = stationDist[i+1];
+          const p = coordAtDistance(da + (db-da)*r, geoRoute, cumDist);
+          return { pos:p, idx:i, nextIdx:i+1, progress:routeProgress };
+        }
+        if(corrCum && corrDistStart!=null && corrDistEnd!=null && i===6){
+          const p = coordAtDistance(corrDistStart + (corrDistEnd-corrDistStart)*r, hmHjCorridor, corrCum);
+          return { pos:p, idx:i, nextIdx:i+1, progress:routeProgress };
+        }
+        const lat = a.lat + (b.lat - a.lat)*r; const lon = a.lon + (b.lon - a.lon)*r;
+        return { pos:[lat,lon], idx:i, nextIdx:i+1, progress:routeProgress };
+      }
+    }
+    return { pos:[pts[0].lat, pts[0].lon], idx:0, nextIdx:1, progress:0 };
+  }
+
+  // ==== 4) 地図初期化 ====
+  const map = L.map('map', {zoomControl:false});
+  const base = L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {maxZoom: 18,attribution: '&copy; OpenStreetMap &copy; CARTO'}).addTo(map);
+  L.control.zoom({position:'bottomright'}).addTo(map);
+
+  const routeCoords = [...timetable.map(p=>[p.lat,p.lon])];
+  function buildDisplayPath(){
+    const idxHamamatsu=6, idxHimeji=7; const pre=routeCoords.slice(0, idxHamamatsu); const post=routeCoords.slice(idxHimeji+1);
+    return [...pre, ...hmHjCorridor, ...post];
+  }
+  const displayPath = buildDisplayPath();
+  let routeLine = L.polyline(displayPath, {color: '#b7410e', weight: 4, opacity: 0.9}).addTo(map);
+  map.fitBounds(routeLine.getBounds(), {padding:[20,20]});
+
+  // 浜松→姫路コリドー用距離テーブル
+  let corrCum=null, corrDistStart=null, corrDistEnd=null;
+  if(hmHjCorridor.length>1){
+    corrCum = buildCumDistances(hmHjCorridor);
+    corrDistStart = nearestDistanceOnPath([timetable[6].lat, timetable[6].lon], hmHjCorridor, corrCum);
+    corrDistEnd   = nearestDistanceOnPath([timetable[7].lat, timetable[7].lon], hmHjCorridor, corrCum);
+  }
+
+  // ==== 距離・スナップ用ユーティリティ ====
+  function haversine(a,b){ const R=6371, dLat=(b[0]-a[0])*Math.PI/180, dLon=(b[1]-a[1])*Math.PI/180, la=a[0]*Math.PI/180, lb=b[0]*Math.PI/180; const h=Math.sin(dLat/2)**2 + Math.cos(la)*Math.cos(lb)*Math.sin(dLon/2)**2; return 2*R*Math.asin(Math.sqrt(h)); }
+  function buildCumDistances(path){ const cum=[0]; for(let i=1;i<path.length;i++){ cum[i]=cum[i-1]+haversine(path[i-1], path[i]); } return cum; }
+  function extractRouteCoords(gj){ const coords=[]; function pushLine(line){ for(const c of line){ if(Array.isArray(c)&&c.length>=2){ coords.push([c[1],c[0]]); } } } if(gj.type==='FeatureCollection'){ for(const f of gj.features){ const g=f.geometry; if(!g) continue; if(g.type==='LineString') pushLine(g.coordinates); else if(g.type==='MultiLineString') for(const line of g.coordinates) pushLine(line); else if(g.type==='Polygon') pushLine(g.coordinates[0]); } } else if(gj.type==='Feature'){ const g=gj.geometry; if(g.type==='LineString') pushLine(g.coordinates); else if(g.type==='MultiLineString') for(const line of g.coordinates) pushLine(line); else if(g.type==='Polygon') pushLine(g.coordinates[0]); } else if(gj.type==='LineString') pushLine(gj.coordinates); else if(gj.type==='MultiLineString') for(const line of gj.coordinates) pushLine(line); return coords; }
+  function nearestDistanceOnPath(p, path, cum){ let bestD=Infinity, bestDist=0; for(let i=0;i<path.length-1;i++){ const A=path[i], B=path[i+1]; const t = projectParam(p, A, B); const Q=[ A[0] + (B[0]-A[0])*t, A[1] + (B[1]-A[1])*t ]; const d = haversine(p, Q); if(d<bestD){ bestD=d; bestDist=cum[i] + haversine(A, Q); } } return bestDist; }
+  function projectParam(P,A,B){ const y=v=>v[0], x=v=>v[1]; const ax=x(A), ay=y(A), bx=x(B), by=y(B), px=x(P), py=y(P); const vx=bx-ax, vy=by-ay, wx=px-ax, wy=py-ay; const vv=vx*vx+vy*vy; if(vv===0) return 0; let t=(wx*vx+wy*vy)/vv; if(t<0) t=0; if(t>1) t=1; return t; }
+  function coordAtDistance(target, path, cum){ let lo=0, hi=cum.length-1; while(lo<hi){ const mid=(lo+hi)>>1; (cum[mid]<target)?(lo=mid+1):(hi=mid); } const i=Math.max(1, lo); const d0=cum[i-1], d1=cum[i]; const r = d1>d0 ? (target-d0)/(d1-d0) : 0; const A=path[i-1], B=path[i]; return [ A[0] + (B[0]-A[0])*r, A[1] + (B[1]-A[1])*r ]; }
+
+  // 列車マーカー
+  const trainIcon = L.divIcon({
+    className:'train-icon',
+    html:`<div style="display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:50%;background:var(--accent);color:#fffef5;font-weight:900;border:2px solid var(--gold);">寝</div>`,
+    iconSize:[28,28], iconAnchor:[14,14]
+  });
+  const marker = L.marker(routeCoords[0], {icon:trainIcon}).addTo(map);
+
+  // ==== GeoJSON 読込機能 ====
+  let geoLayer = null; let geoRoute=null, cumDist=null, stationDist=null;
+  async function loadGeoJSON(url){
+    try{
+      const res = await fetch(url); if(!res.ok) throw new Error('HTTP '+res.status);
+      const gj = await res.json();
+      if(geoLayer){ map.removeLayer(geoLayer); geoLayer=null; }
+      geoLayer = L.geoJSON(gj, { style: { color:'#c7a600', weight:3, opacity:0.9 } }).addTo(map);
+      geoRoute = extractRouteCoords(gj); if(geoRoute.length < 2) throw new Error('線形状の座標が見つかりません');
+      cumDist = buildCumDistances(geoRoute);
+      stationDist = timetable.map(s => nearestDistanceOnPath([s.lat, s.lon], geoRoute, cumDist));
+      map.fitBounds(geoLayer.getBounds(), {padding:[20,20]});
+    }catch(e){ alert('GeoJSONの読込に失敗しました: '+e.message); }
+  }
+  document.getElementById('btnLoadGeo').addEventListener('click', ()=>{
+    const u = document.getElementById('geojsonUrl').value.trim(); if(u) loadGeoJSON(u);
+  });
+  document.getElementById('btnClearGeo').addEventListener('click', ()=>{
+    if(geoLayer){ map.removeLayer(geoLayer); geoLayer=null; geoRoute=null; cumDist=null; stationDist=null; map.fitBounds(routeLine.getBounds(), {padding:[20,20]}); }
+  });
+
+  // 停車駅マーカー
+  timetable.forEach((s)=>{
+    L.circleMarker([s.lat,s.lon],{radius:4,color:'#b08b00',fillColor:'#fff',fillOpacity:1,weight:2})
+      .addTo(map).bindPopup(`${s.name} <span class="time">${s.time}</span>`);
+  });
+
+  // ==== 5) テーブル描画 ====
+  function renderTable(){
+    const el = document.getElementById('tbl');
+    el.innerHTML = '';
+    const thead = `<tr><th>#</th><th>駅</th><th>発/着 時刻</th></tr>`;
+    const rows = timetable.map((s,i)=>`<tr><td>${i+1}</td><td>${s.name}</td><td class="time">${s.time}</td></tr>`).join('');
+    el.innerHTML = thead + rows;
+  }
+  renderTable();
+
+  // ==== 6) ステータスとティッカー ====
+  const elStatus = document.getElementById('status');
+  const elSeg = document.getElementById('segment');
+  const elNext = document.getElementById('nextStop');
+  const elETA = document.getElementById('eta');
+  const elProg = document.getElementById('routeProgress');
+  const elNow = document.getElementById('nowJST');
+  const elDate = document.getElementById('datePick');
+  const elTicker = document.getElementById('ledTicker');
+  const DWELL_SEC = 90;
+
+  function getSelectedRun(){
+    const v = elDate.value; if(!v) return null; const [Y,M,D] = v.split('-').map(Number);
+    const startJST = new Date(Date.UTC(Y, M-1, D, 12, 50, 0)); // 21:50 JST = 12:50 UTC
+    const arrive = parseHMToDate(startJST, timetable.at(-1).time); return {start:startJST, arrive};
+  }
+
+  function buildTicker(now, run){
+    const pts = timetable.map(pt=>({ ...pt, t: parseHMToDate(run.start, pt.time) }));
+    if(now < pts[0].t) return `ただいま <${timetable[0].name}> に停車中。まもなく ${timetable[1].name} に向けて出発します。`;
+    if(now >= pts.at(-1).t) return `終点 <${timetable.at(-1).name}> に到着しました。ご乗車ありがとうございました。`;
+    for(let i=0;i<pts.length;i++){ const dt = Math.abs((now - pts[i].t)/1000); if(dt <= DWELL_SEC){ const nextName = i < pts.length-1 ? timetable[i+1].name : '—'; return `ただいま <${timetable[i].name}> に停車中。次は ${nextName} です。`; } }
+    for(let i=0;i<pts.length-1;i++){ const a=pts[i], b=pts[i+1]; if(now >= a.t && now <= b.t){ const remMin = Math.max(0, Math.round((b.t - now)/60000)); return `${a.name} と ${b.name} の間を走行中（次は ${b.name}、あと約 ${remMin} 分）。`; } }
+    return `運転情報を更新中…`;
+  }
+  function setTickerText(text){ const safe = text.replace(/</g,'&lt;').replace(/>/g,'&gt;'); elTicker.innerHTML = `<span>${safe}&nbsp;&nbsp;&nbsp;&nbsp;</span><span>${safe}&nbsp;&nbsp;&nbsp;&nbsp;</span>`; }
+
+  function update(){
+    const now = new Date(); elNow.textContent = now.toLocaleString('ja-JP',{timeZone:JST});
+    const run = getSelectedRun() || pickRunFor(now);
+    if(!run){ elStatus.textContent = '現在は運転時間外（21:50出発〜翌朝到着）です。'; elSeg.textContent = '-'; elNext.textContent = '-'; elETA.textContent = '-'; marker.setLatLng(routeCoords[0]); elProg.style.width = '0%'; setTickerText('本列車の運転時間外です。今夜の運転は21:50に東京を発車します。'); return; }
+    const info = interpolatePosition(now, run.start); marker.setLatLng(info.pos); map.panTo(info.pos, {animate:true, duration:.5});
+    const idx = info.idx; const next = info.nextIdx; const seg = next==null ? `${timetable[idx].name} → 終点` : `${timetable[idx].name} → ${timetable[next].name}`;
+    elStatus.textContent = '運転中（時刻表ベース推定）'; elSeg.textContent = seg; elNext.textContent = next==null? '-' : timetable[next].name;
+    if(next!=null){ const arr = parseHMToDate(run.start, timetable[next].time); elETA.textContent = `${fmtHM(arr)} 頃`; } else { elETA.textContent = `${fmtHM(run.arrive)} 頃`; }
+    elProg.style.width = (info.progress*100).toFixed(1)+"%"; setTickerText(buildTicker(now, run));
+  }
+
+  // ==== 7) 共有リンク ====
+  function applyHash(){ const hash = new URL(location.href).hash.slice(1); if(!hash) return; try{ const obj = JSON.parse(decodeURIComponent(hash)); if(obj.date){ elDate.value = obj.date; } }catch(e){} }
+  function setHash(){ const payload = {date: elDate.value || fmtYMD(new Date())}; history.replaceState(null, '', '#'+encodeURIComponent(JSON.stringify(payload))); }
+
+  // ==== 8) 初期化とイベント ====
+  elDate.value = fmtYMD(new Date()); applyHash();
+  document.getElementById('btnNow').addEventListener('click', ()=>{ elDate.value = fmtYMD(new Date()); setHash(); update(); });
+  document.getElementById('btnShare').addEventListener('click', ()=>{ setHash(); navigator.clipboard?.writeText(location.href); alert('このURLを共有してください。'); });
+  document.getElementById('btnLoadGeo').addEventListener('click', ()=>{});
+  document.getElementById('btnClearGeo').addEventListener('click', ()=>{});
+  elDate.addEventListener('change', ()=>{ setHash(); update(); });
+  update(); setInterval(update, 15*1000);
+
+  // ==== 9) セルフテスト（簡易） ====
+  (function runSelfTests(){
+    try{
+      console.groupCollapsed('[SelfTest] Sunrise Izumo Tracker');
+      const base = new Date('2024-01-01T12:00:00+09:00');
+      const d1 = parseHMToDate(base, '01:00+1'); console.assert((d1-base)>0, 'parseHMToDate +1 failed');
+      const arr = extractRouteCoords({type:'LineString', coordinates:[[139,35],[140,36]]}); console.assert(arr[0][0]===35 && arr[0][1]===139, 'extractRouteCoords failed');
+      const cum = buildCumDistances([[35,139],[35.5,139.5],[36,140]]); console.assert(cum[2]>cum[1] && cum[1]>cum[0], 'cum monotonic failed');
+      const p0 = coordAtDistance(0, [[0,0],[1,1]], [0,157]); const p1 = coordAtDistance(157, [[0,0],[1,1]], [0,157]); console.assert(p0[0]===0 && p1[0]===1, 'coordAtDistance endpoints failed');
+      const startForTest = new Date(Date.UTC(2024,0,1,12,50,0));
+      const ip1 = interpolatePosition(parseHMToDate(startForTest, '22:05'), startForTest); console.assert(ip1.idx===0 && ip1.nextIdx===1, 'interpolate basic seg failed');
+      const ip2 = interpolatePosition(parseHMToDate(startForTest, '03:00+1'), startForTest); console.assert(ip2.idx===6 && ip2.nextIdx===7, 'interpolate corridor seg failed');
+      console.groupEnd();
+    }catch(e){ console.warn('SelfTest error', e); }
+  })();
+  </script>
+</body>
+</html>
