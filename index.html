@@ -116,7 +116,7 @@
   </main>
 
   <footer>
-    <div class="wrap">© sunrise-izumo-tracker / Map © OpenStreetMap contributors</div>
+    <div class="wrap">© あなたのサイト名 / Map © OpenStreetMap contributors</div>
   </footer>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -145,11 +145,23 @@
 
   // 浜松→姫路のみ補正するコリドー
   const hmHjCorridor = [
-    [34.7030,137.7340],  [34.7703,137.9980], [34.7622,137.3830], [34.8260,137.2270],
-    [34.9540,137.1700],  [35.1709,136.8815], [35.2484,136.9367], [35.3009,136.7569],
-    [35.3161,136.2920],  [35.0116,135.7681], [34.8930,135.8050], [34.7339,135.5000],
-    [34.7330,135.4170],  [34.7370,135.3040], [34.6928,135.1955], [34.6494,134.9972],
-    [34.7691,134.8390],  [34.8260,134.6900]
+    // 浜松→姫路 区間を「西向き（経度が単調に小さくなる）」で並べ直し
+    // ※掛川（東寄り 137.998E）は浜松より東に位置するため、このコリドーから除外
+    [34.7030,137.7340],  // 浜松（起点）
+    [34.7622,137.3830],  // 豊橋
+    [34.8260,137.2270],  // 蒲郡付近
+    [34.9540,137.1700],  // 岡崎付近
+    [35.1709,136.8815],  // 名古屋
+    [35.3009,136.7569],  // 木曽川〜岐阜羽島付近
+    [35.3161,136.2920],  // 米原
+    [35.0116,135.7681],  // 京都
+    [34.7339,135.5000],  // 新大阪〜大阪
+    [34.7330,135.4170],  // 尼崎
+    [34.7370,135.3040],  // 芦屋
+    [34.6928,135.1955],  // 三ノ宮（神戸）
+    [34.6494,134.9972],  // 明石
+    [34.7691,134.8390],  // 加古川
+    [34.8260,134.6900]   // 姫路（終点）
   ];
 
   // ==== 2) 日付処理・ユーティリティ ====
@@ -175,7 +187,7 @@
   // ==== 3) 区間内補間（GeoJSON優先 → 浜松-姫路コリドー → 直線） ====
   function interpolatePosition(now, startDate){
     const pts = timetable.map(pt=>({ ...pt, t: parseHMToDate(startDate, pt.time) }));
-    if(now <= pts[0].t) return { pos:[pts[0].lat, pts[0].lon], idx:0, nextIdx:1, progress:0 };
+    if(now < pts[0].t) return { pos:[pts[0].lat, pts[0].lon], idx:0, nextIdx:1, progress:0 };
     if(now >= pts.at(-1).t) return { pos:[pts.at(-1).lat, pts.at(-1).lon], idx:pts.length-1, nextIdx:null, progress:1 };
     for(let i=0;i<pts.length-1;i++){
       const a=pts[i], b=pts[i+1];
@@ -302,7 +314,21 @@
 
   function update(){
     const now = new Date(); elNow.textContent = now.toLocaleString('ja-JP',{timeZone:JST});
-    const run = getSelectedRun() || pickRunFor(now);
+    // 自動補正付き：選択日が大きくズレていれば本日の運転に切替
+    const sel = getSelectedRun();
+    let run = sel || pickRunFor(now);
+    if(sel){
+      const margin = 6*60*60*1000; // 6時間
+      const tooOld = now - sel.arrive > margin;       // かなり過去
+      const tooEarly = sel.start - now > margin;      // かなり未来
+      if(tooOld || tooEarly){
+        const today = new Date();
+        elDate.value = fmtYMD(today);
+        setHash();
+        run = pickRunFor(now);
+        elStatus.textContent = '日付の自動補正（本日の運転に切替）';
+      }
+    }
     if(!run){ elStatus.textContent = '現在は運転時間外（21:50出発〜翌朝到着）です。'; elSeg.textContent = '-'; elNext.textContent = '-'; elETA.textContent = '-'; marker.setLatLng(routeCoords[0]); elProg.style.width = '0%'; setTickerText('本列車の運転時間外です。今夜の運転は21:50に東京を発車します。'); return; }
     const info = interpolatePosition(now, run.start); marker.setLatLng(info.pos); map.panTo(info.pos, {animate:true, duration:.5});
     const idx = info.idx; const next = info.nextIdx; const seg = next==null ? `${timetable[idx].name} → 終点` : `${timetable[idx].name} → ${timetable[next].name}`;
@@ -334,8 +360,15 @@
       const cum = buildCumDistances([[35,139],[35.5,139.5],[36,140]]); console.assert(cum[2]>cum[1] && cum[1]>cum[0], 'cum monotonic failed');
       const p0 = coordAtDistance(0, [[0,0],[1,1]], [0,157]); const p1 = coordAtDistance(157, [[0,0],[1,1]], [0,157]); console.assert(p0[0]===0 && p1[0]===1, 'coordAtDistance endpoints failed');
       const startForTest = new Date(Date.UTC(2024,0,1,12,50,0));
+      // 出発ジャスト（21:50）でも区間に入る（据え置きにならない）
+      const t0 = parseHMToDate(startForTest, '21:50');
+      const ip0 = interpolatePosition(t0, startForTest);
+      console.assert(ip0 && ip0.idx===0 && ip0.nextIdx===1, 'interpolate at exact departure failed');
       const ip1 = interpolatePosition(parseHMToDate(startForTest, '22:05'), startForTest); console.assert(ip1.idx===0 && ip1.nextIdx===1, 'interpolate basic seg failed');
       const ip2 = interpolatePosition(parseHMToDate(startForTest, '03:00+1'), startForTest); console.assert(ip2.idx===6 && ip2.nextIdx===7, 'interpolate corridor seg failed');
+      // NEW: コリドーが「西向き（経度が非増加）」であることをざっくり検証
+      let ok=true; for(let i=1;i<hmHjCorridor.length;i++){ if(hmHjCorridor[i][1] > hmHjCorridor[i-1][1] + 1e-6){ ok=false; break; } }
+      console.assert(ok, 'hmHjCorridor longitudes should be non-increasing (no eastward backtrack)');
       console.groupEnd();
     }catch(e){ console.warn('SelfTest error', e); }
   })();
